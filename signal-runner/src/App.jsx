@@ -4,9 +4,9 @@ const MODELS = [
   {
     id: "perplexity", label: "Perplexity", role: "Research", accent: "#20B2AA",
     call: async (prompt, key) => {
-      const res = await fetch("https://api.perplexity.ai/chat/completions", {
+      const res = await fetch("/api/perplexity", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
         body: JSON.stringify({ model: "sonar", messages: [{ role: "user", content: prompt }] }),
       });
       const data = await res.json();
@@ -17,10 +17,11 @@ const MODELS = [
   {
     id: "gemini", label: "Gemini", role: "Synthesis", accent: "#4285F4",
     call: async (prompt, key) => {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
-      );
+      const res = await fetch("/api/gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Gemini error");
       return data.candidates[0].content.parts[0].text;
@@ -29,9 +30,9 @@ const MODELS = [
   {
     id: "chatgpt", label: "ChatGPT", role: "Structure", accent: "#10A37F",
     call: async (prompt, key) => {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      const res = await fetch("/api/openai", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
         body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: prompt }] }),
       });
       const data = await res.json();
@@ -42,9 +43,9 @@ const MODELS = [
   {
     id: "claude", label: "Claude", role: "Nuance", accent: "#D4763B",
     call: async (prompt) => {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
       });
       const data = await res.json();
@@ -55,9 +56,9 @@ const MODELS = [
   {
     id: "grok", label: "Grok", role: "Contrarian", accent: "#E0E0E0",
     call: async (prompt, key) => {
-      const res = await fetch("https://api.x.ai/v1/chat/completions", {
+      const res = await fetch("/api/grok", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
         body: JSON.stringify({ model: "grok-3", messages: [{ role: "user", content: prompt }] }),
       });
       const data = await res.json();
@@ -153,9 +154,9 @@ export default function SignalRunner() {
       .filter(Boolean).join("\n\n---\n\n");
     const synthPrompt = `Original prompt: "${prompt}"\n\nModel outputs:\n\n${modelOutputs}\n\n---\n\nYour task: ${mode.prompt}`;
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-access": "true" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: synthPrompt }] }),
       });
       const data = await res.json();
