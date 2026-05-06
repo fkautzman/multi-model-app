@@ -1,7 +1,7 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
-function apiProxyPlugin() {
+function apiProxyPlugin(env) {
   return {
     name: 'api-proxy',
     configResolved(config) {
@@ -73,7 +73,7 @@ function apiProxyPlugin() {
         })
 
         const userKey = req.headers['x-api-key']
-        const envKey = process.env[`VITE_${provider.toUpperCase()}_KEY`]
+        const envKey = env[`VITE_${provider.toUpperCase()}_KEY`] || process.env[`VITE_${provider.toUpperCase()}_KEY`]
         const key = userKey || envKey
 
         if (!key) {
@@ -107,6 +107,9 @@ function apiProxyPlugin() {
   }
 }
 
-export default defineConfig({
-  plugins: [apiProxyPlugin(), react()],
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  return {
+    plugins: [apiProxyPlugin(env), react()],
+  }
 })
