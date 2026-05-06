@@ -1,13 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 const MODELS = [
   {
     id: "perplexity", label: "Perplexity", role: "Research", accent: "#20B2AA",
-    call: async (prompt, key) => {
+    call: async (messages, key) => {
       const res = await fetch("/api/perplexity", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "sonar", messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model: "sonar", messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Perplexity error");
@@ -16,11 +16,15 @@ const MODELS = [
   },
   {
     id: "gemini", label: "Gemini", role: "Synthesis", accent: "#4285F4",
-    call: async (prompt, key) => {
+    call: async (messages, key) => {
+      const contents = messages.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
       const res = await fetch("/api/gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+        body: JSON.stringify({ contents }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Gemini error");
@@ -29,11 +33,11 @@ const MODELS = [
   },
   {
     id: "chatgpt", label: "ChatGPT", role: "Structure", accent: "#10A37F",
-    call: async (prompt, key) => {
+    call: async (messages, key) => {
       const res = await fetch("/api/openai", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model: "gpt-4o", messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "OpenAI error");
@@ -42,11 +46,11 @@ const MODELS = [
   },
   {
     id: "claude", label: "Claude", role: "Nuance", accent: "#D4763B",
-    call: async (prompt) => {
+    call: async (messages, key) => {
       const res = await fetch("/api/claude", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] }),
+        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Claude error");
@@ -55,11 +59,11 @@ const MODELS = [
   },
   {
     id: "grok", label: "Grok", role: "Contrarian", accent: "#E0E0E0",
-    call: async (prompt, key) => {
+    call: async (messages, key) => {
       const res = await fetch("/api/grok", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "grok-3", messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model: "grok-3", messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Grok error");
@@ -73,6 +77,30 @@ const SYNTH_MODES = [
   { id: "disagree", label: "Disagreements", prompt: "Identify where the models disagree, contradict each other, or take meaningfully different angles. What are the fault lines?" },
   { id: "actions", label: "Action Items", prompt: "Extract the most actionable outputs across all responses. What should someone actually do based on this analysis?" },
 ];
+
+// Build per-model message array. Missed turns get merged into the next user
+// message that model sees, so it has context of what was asked but never sees
+// other models' responses.
+function buildMessagesForModel(modelId, turns, currentPrompt) {
+  const messages = [];
+  const pending = [];
+  for (const turn of turns) {
+    const resp = turn.responses?.[modelId];
+    if (resp && resp.content) {
+      const userContent = pending.length ? [...pending, turn.user].join("\n\n") : turn.user;
+      messages.push({ role: "user", content: userContent });
+      messages.push({ role: "assistant", content: resp.content });
+      pending.length = 0;
+    } else {
+      pending.push(turn.user);
+    }
+  }
+  const finalUser = pending.length ? [...pending, currentPrompt].join("\n\n") : currentPrompt;
+  messages.push({ role: "user", content: finalUser });
+  return messages;
+}
+
+const STORAGE_KEY = "signal-runner-turns-v1";
 
 const CopyIcon = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -99,18 +127,34 @@ export default function SignalRunner() {
     perplexity: import.meta.env.VITE_PERPLEXITY_KEY || "",
     gemini: import.meta.env.VITE_GEMINI_KEY || "",
     chatgpt: import.meta.env.VITE_OPENAI_KEY || "",
+    claude: import.meta.env.VITE_CLAUDE_KEY || "",
     grok: import.meta.env.VITE_GROK_KEY || "",
   });
-  const [results, setResults] = useState({});
+  const [turns, setTurns] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
   const [loading, setLoading] = useState({});
-  const [errors, setErrors] = useState({});
   const [showKeys, setShowKeys] = useState(false);
   const [copied, setCopied] = useState({});
-  const [ran, setRan] = useState(false);
   const [synthesis, setSynthesis] = useState("");
   const [synthesizing, setSynthesizing] = useState(false);
   const [synthMode, setSynthMode] = useState("insights");
   const [enabled, setEnabled] = useState(() => Object.fromEntries(MODELS.map((m) => [m.id, true])));
+  const transcriptRefs = useRef({});
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(turns)); } catch {}
+  }, [turns]);
+
+  // Auto-scroll each transcript to bottom when turns change
+  useEffect(() => {
+    Object.values(transcriptRefs.current).forEach((el) => {
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }, [turns]);
 
   const toggleModel = (id) => {
     setEnabled((e) => {
@@ -122,22 +166,35 @@ export default function SignalRunner() {
 
   const activeModels = MODELS.filter((m) => enabled[m.id]);
 
-  const handleRun = async () => {
+  const handleSend = async () => {
     if (!prompt.trim()) return;
-    setRan(true);
-    setResults({});
-    setErrors({});
+    const promptText = prompt.trim();
+    const newTurnId = Date.now();
+
+    const perModelMessages = {};
+    activeModels.forEach((m) => {
+      perModelMessages[m.id] = buildMessagesForModel(m.id, turns, promptText);
+    });
+
+    setTurns((t) => [...t, { id: newTurnId, user: promptText, responses: {} }]);
+    setPrompt("");
     setSynthesis("");
+
     const init = {};
     activeModels.forEach((m) => (init[m.id] = true));
     setLoading(init);
+
     await Promise.all(
       activeModels.map(async (model) => {
         try {
-          const result = await model.call(prompt, keys[model.id] || "");
-          setResults((r) => ({ ...r, [model.id]: result }));
+          const result = await model.call(perModelMessages[model.id], keys[model.id] || "");
+          setTurns((ts) => ts.map((t) =>
+            t.id === newTurnId ? { ...t, responses: { ...t.responses, [model.id]: { content: result } } } : t
+          ));
         } catch (e) {
-          setErrors((r) => ({ ...r, [model.id]: e.message }));
+          setTurns((ts) => ts.map((t) =>
+            t.id === newTurnId ? { ...t, responses: { ...t.responses, [model.id]: { error: e.message } } } : t
+          ));
         } finally {
           setLoading((l) => ({ ...l, [model.id]: false }));
         }
@@ -145,22 +202,38 @@ export default function SignalRunner() {
     );
   };
 
+  const handleNewChat = () => {
+    if (turns.length && !window.confirm("Clear conversation history?")) return;
+    setTurns([]);
+    setSynthesis("");
+    setLoading({});
+  };
+
   const handleSynthesize = async () => {
+    const lastTurn = turns[turns.length - 1];
+    if (!lastTurn) return;
     setSynthesizing(true);
     setSynthesis("");
     const mode = SYNTH_MODES.find((m) => m.id === synthMode);
     const modelOutputs = activeModels
-      .map((m) => results[m.id] ? `## ${m.label} (${m.role})\n${results[m.id]}` : null)
+      .map((m) => {
+        const r = lastTurn.responses?.[m.id];
+        return r?.content ? `## ${m.label} (${m.role})\n${r.content}` : null;
+      })
       .filter(Boolean).join("\n\n---\n\n");
-    const synthPrompt = `Original prompt: "${prompt}"\n\nModel outputs:\n\n${modelOutputs}\n\n---\n\nYour task: ${mode.prompt}`;
+    const synthPrompt = `Original prompt: "${lastTurn.user}"\n\nModel outputs:\n\n${modelOutputs}\n\n---\n\nYour task: ${mode.prompt}`;
     try {
       const res = await fetch("/api/claude", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(keys.claude && { "X-API-Key": keys.claude }) },
         body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: synthPrompt }] }),
       });
       const data = await res.json();
-      setSynthesis(data.content[0].text);
+      if (!res.ok) {
+        setSynthesis("Synthesis error: " + (data.error?.message || "unknown"));
+      } else {
+        setSynthesis(data.content[0].text);
+      }
     } catch (e) {
       setSynthesis("Synthesis error: " + e.message);
     } finally {
@@ -175,7 +248,9 @@ export default function SignalRunner() {
   };
 
   const anyLoading = Object.values(loading).some(Boolean);
-  const allDone = ran && !anyLoading && activeModels.some((m) => results[m.id]);
+  const hasHistory = turns.length > 0;
+  const lastTurn = turns[turns.length - 1];
+  const lastTurnDone = lastTurn && !anyLoading && activeModels.some((m) => lastTurn.responses?.[m.id]?.content);
   const colCount = activeModels.length;
 
   return (
@@ -195,6 +270,7 @@ export default function SignalRunner() {
         .copy-btn:hover { opacity: 1 !important; }
         .mode-btn:hover { border-color: #d8d8d8 !important; color: #d8d8d8 !important; }
         .synth-run:hover:not(:disabled) { background: #D4763B !important; border-color: #D4763B !important; color: #fff !important; }
+        .new-chat:hover { color: #d8d8d8 !important; border-color: #3a3a3a !important; }
         .result-card { transition: border-color 0.25s; }
         .model-toggle { transition: all 0.15s; }
         .model-toggle:hover { opacity: 1 !important; }
@@ -204,7 +280,12 @@ export default function SignalRunner() {
         <div style={{ marginBottom: 28, borderBottom: "1px solid #1e1e1e", paddingBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 14 }}>
             <h1 style={{ margin: 0, fontSize: 20, fontWeight: 600, color: "#fff", letterSpacing: "0.06em" }}>SIGNAL RUNNER</h1>
-            <span style={{ fontSize: 10, color: "#3a3a3a", letterSpacing: "0.18em" }}>v1.0</span>
+            <span style={{ fontSize: 10, color: "#3a3a3a", letterSpacing: "0.18em" }}>v1.1</span>
+            {hasHistory && (
+              <span style={{ fontSize: 10, color: "#3a3a3a", letterSpacing: "0.1em", marginLeft: "auto" }}>
+                {turns.length} TURN{turns.length > 1 ? "S" : ""}
+              </span>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ fontSize: 10, color: "#3a3a3a", letterSpacing: "0.14em", marginRight: 4 }}>MODELS</span>
@@ -233,9 +314,9 @@ export default function SignalRunner() {
               {MODELS.map((m) => (
                 <div key={m.id}>
                   <label style={{ display: "block", fontSize: 10, color: m.accent, letterSpacing: "0.12em", marginBottom: 5 }}>{m.label.toUpperCase()}</label>
-                  <input type="password" placeholder={m.id === "claude" ? "native — no key needed" : `${m.id} api key`}
-                    value={keys[m.id] || ""} onChange={(e) => setKeys((k) => ({ ...k, [m.id]: e.target.value }))} disabled={m.id === "claude"}
-                    style={{ width: "100%", background: "#0f0f0f", border: `1px solid ${m.id === "claude" ? "#1a1a1a" : "#2a2a2a"}`, borderRadius: 3, padding: "8px 11px", color: m.id === "claude" ? "#2a2a2a" : "#aaa", fontSize: 11, fontFamily: "inherit", letterSpacing: "0.04em" }} />
+                  <input type="password" placeholder={`${m.id} api key`}
+                    value={keys[m.id] || ""} onChange={(e) => setKeys((k) => ({ ...k, [m.id]: e.target.value }))}
+                    style={{ width: "100%", background: "#0f0f0f", border: "1px solid #2a2a2a", borderRadius: 3, padding: "8px 11px", color: "#aaa", fontSize: 11, fontFamily: "inherit", letterSpacing: "0.04em" }} />
                 </div>
               ))}
             </div>
@@ -243,65 +324,88 @@ export default function SignalRunner() {
         </div>
 
         <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)}
-          placeholder="enter prompt or signal to analyze..." rows={4}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleRun(); }}
+          placeholder={hasHistory ? "follow up..." : "enter prompt or signal to analyze..."} rows={hasHistory ? 2 : 4}
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSend(); }}
           style={{ width: "100%", background: "#0f0f0f", border: "1px solid #222", borderRadius: 4, padding: "14px 16px", color: "#d8d8d8", fontSize: 13, fontFamily: "inherit", resize: "vertical", lineHeight: 1.65, letterSpacing: "0.02em", marginBottom: 4 }}
           onFocus={(e) => (e.target.style.borderColor = "#3a3a3a")}
           onBlur={(e) => (e.target.style.borderColor = "#222")} />
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
-          <span style={{ fontSize: 10, color: "#2a2a2a", letterSpacing: "0.1em" }}>⌘↵ to run</span>
+          <span style={{ fontSize: 10, color: "#2a2a2a", letterSpacing: "0.1em" }}>⌘↵ to send</span>
           {prompt.trim() && <span style={{ fontSize: 10, color: "#2a2a2a" }}>{prompt.length} chars</span>}
         </div>
 
-        <button className="run-btn" onClick={handleRun} disabled={anyLoading || !prompt.trim()}
-          style={{ background: "#d8d8d8", color: "#0a0a0a", border: "none", borderRadius: 3, padding: "10px 30px", fontSize: 11, fontFamily: "inherit", fontWeight: 600, letterSpacing: "0.14em", cursor: "pointer", marginBottom: 32, transition: "all 0.15s" }}>
-          {anyLoading ? "RUNNING..." : `RUN ${activeModels.length === MODELS.length ? "ALL" : activeModels.length} MODEL${activeModels.length > 1 ? "S" : ""}`}
-        </button>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 32 }}>
+          <button className="run-btn" onClick={handleSend} disabled={anyLoading || !prompt.trim()}
+            style={{ background: "#d8d8d8", color: "#0a0a0a", border: "none", borderRadius: 3, padding: "10px 30px", fontSize: 11, fontFamily: "inherit", fontWeight: 600, letterSpacing: "0.14em", cursor: "pointer", transition: "all 0.15s" }}>
+            {anyLoading ? "SENDING..." : `SEND TO ${activeModels.length === MODELS.length ? "ALL" : activeModels.length} MODEL${activeModels.length > 1 ? "S" : ""}`}
+          </button>
+          {hasHistory && (
+            <button className="new-chat" onClick={handleNewChat}
+              style={{ background: "none", color: "#3a3a3a", border: "1px solid #222", borderRadius: 3, padding: "9px 18px", fontSize: 10, fontFamily: "inherit", letterSpacing: "0.14em", cursor: "pointer", transition: "all 0.15s" }}>
+              + NEW CHAT
+            </button>
+          )}
+        </div>
 
-        {ran && (
+        {hasHistory && (
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${colCount}, 1fr)`, gap: 12, animation: "fadeUp 0.3s ease" }}>
             {activeModels.map((model) => (
               <div key={model.id} className="result-card"
-                style={{ background: "#0d0d0d", border: `1px solid ${loading[model.id] ? model.accent + "35" : "#1e1e1e"}`, borderTop: `2px solid ${model.accent}`, borderRadius: 4, padding: 16, minHeight: 280, display: "flex", flexDirection: "column" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: model.accent, letterSpacing: "0.05em" }}>{model.label}</div>
-                    <div style={{ fontSize: 9, color: "#2e2e2e", letterSpacing: "0.14em", marginTop: 3 }}>{model.role.toUpperCase()}</div>
-                  </div>
-                  {results[model.id] && (
-                    <button className="copy-btn" onClick={() => handleCopy(model.id, results[model.id])}
-                      style={{ background: "none", border: "none", cursor: "pointer", color: copied[model.id] ? model.accent : "#2e2e2e", padding: 2, opacity: 0.8, transition: "all 0.15s" }}>
-                      {copied[model.id] ? <span style={{ fontSize: 11 }}>✓</span> : <CopyIcon />}
-                    </button>
-                  )}
+                style={{ background: "#0d0d0d", border: "1px solid #1e1e1e", borderTop: `2px solid ${model.accent}`, borderRadius: 4, padding: 16, display: "flex", flexDirection: "column", maxHeight: 700 }}>
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: model.accent, letterSpacing: "0.05em" }}>{model.label}</div>
+                  <div style={{ fontSize: 9, color: "#2e2e2e", letterSpacing: "0.14em", marginTop: 3 }}>{model.role.toUpperCase()}</div>
                 </div>
-                <div style={{ flex: 1, overflowY: "auto", maxHeight: 500 }}>
-                  {loading[model.id] && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#2e2e2e", fontSize: 11, paddingTop: 2 }}>
-                      <Spinner color={model.accent} />
-                      <span style={{ animation: "pulse 1.5s ease infinite" }}>thinking...</span>
-                    </div>
-                  )}
-                  {errors[model.id] && (
-                    <div style={{ fontSize: 11, lineHeight: 1.6, color: "#cc4444", background: "#1a0a0a", border: "1px solid #2a1010", padding: "10px 12px", borderRadius: 3 }}>
-                      ⚠ {errors[model.id]}
-                    </div>
-                  )}
-                  {results[model.id] && (
-                    <div style={{ fontSize: 12, lineHeight: 1.75, color: "#b8b8b8", whiteSpace: "pre-wrap", animation: "fadeUp 0.35s ease", letterSpacing: "0.01em" }}>
-                      {results[model.id]}
-                    </div>
-                  )}
+                <div ref={(el) => (transcriptRefs.current[model.id] = el)} style={{ flex: 1, overflowY: "auto", paddingRight: 4 }}>
+                  {turns.map((turn, idx) => {
+                    const resp = turn.responses?.[model.id];
+                    const isLatest = turn.id === lastTurn?.id;
+                    const isLoading = isLatest && loading[model.id];
+                    const respKey = `${turn.id}-${model.id}`;
+                    return (
+                      <div key={turn.id} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: idx < turns.length - 1 ? "1px solid #161616" : "none" }}>
+                        <div style={{ fontSize: 10, color: "#5a5a5a", letterSpacing: "0.08em", marginBottom: 6, textTransform: "uppercase" }}>You</div>
+                        <div style={{ fontSize: 11, lineHeight: 1.6, color: "#888", whiteSpace: "pre-wrap", marginBottom: 10, padding: "6px 10px", background: "#101010", borderLeft: "2px solid #2a2a2a", borderRadius: 2 }}>
+                          {turn.user}
+                        </div>
+                        {isLoading && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#2e2e2e", fontSize: 11, paddingTop: 2 }}>
+                            <Spinner color={model.accent} />
+                            <span style={{ animation: "pulse 1.5s ease infinite" }}>thinking...</span>
+                          </div>
+                        )}
+                        {resp?.error && (
+                          <div style={{ fontSize: 11, lineHeight: 1.6, color: "#cc4444", background: "#1a0a0a", border: "1px solid #2a1010", padding: "10px 12px", borderRadius: 3 }}>
+                            ⚠ {resp.error}
+                          </div>
+                        )}
+                        {resp?.content && (
+                          <div>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                              <div style={{ fontSize: 10, color: model.accent, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.7 }}>{model.label}</div>
+                              <button className="copy-btn" onClick={() => handleCopy(respKey, resp.content)}
+                                style={{ background: "none", border: "none", cursor: "pointer", color: copied[respKey] ? model.accent : "#2e2e2e", padding: 2, opacity: 0.7, transition: "all 0.15s" }}>
+                                {copied[respKey] ? <span style={{ fontSize: 11 }}>✓</span> : <CopyIcon />}
+                              </button>
+                            </div>
+                            <div style={{ fontSize: 12, lineHeight: 1.75, color: "#b8b8b8", whiteSpace: "pre-wrap", animation: "fadeUp 0.35s ease", letterSpacing: "0.01em" }}>
+                              {resp.content}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        {allDone && (
+        {lastTurnDone && (
           <div style={{ marginTop: 20, paddingTop: 20, borderTop: "1px solid #1a1a1a", animation: "fadeUp 0.4s ease" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, color: "#3a3a3a", letterSpacing: "0.16em", marginRight: 4 }}>SYNTHESIZE</span>
+              <span style={{ fontSize: 10, color: "#3a3a3a", letterSpacing: "0.16em", marginRight: 4 }}>SYNTHESIZE LATEST TURN</span>
               {SYNTH_MODES.map((mode) => (
                 <button key={mode.id} className="mode-btn" onClick={() => setSynthMode(mode.id)}
                   style={{ background: synthMode === mode.id ? "#1e1e1e" : "none", color: synthMode === mode.id ? "#d8d8d8" : "#3a3a3a", border: `1px solid ${synthMode === mode.id ? "#3a3a3a" : "#1e1e1e"}`, borderRadius: 3, padding: "5px 13px", fontSize: 10, fontFamily: "inherit", letterSpacing: "0.1em", cursor: "pointer", transition: "all 0.15s" }}>
