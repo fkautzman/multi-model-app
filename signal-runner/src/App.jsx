@@ -45,7 +45,7 @@ const MODELS = [
       const res = await fetch("/api/openai", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "gpt-4o", messages }),
+        body: JSON.stringify({ model: "gpt-6-astra", messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "OpenAI error");
@@ -58,7 +58,7 @@ const MODELS = [
       const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages }),
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 1000, messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Claude error");
@@ -71,7 +71,7 @@ const MODELS = [
       const res = await fetch("/api/grok", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "grok-3", messages }),
+        body: JSON.stringify({ model: "grok-4.6", messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Grok error");
@@ -150,7 +150,7 @@ export default function SignalRunner() {
           const res = await fetch("/api/claude", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...(keys.claude && { "X-API-Key": keys.claude }) },
-            body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: synthPrompt }] }),
+            body: JSON.stringify({ model: "claude-opus-5", max_tokens: 8000, messages: [{ role: "user", content: synthPrompt }] }),
           });
           const data = await res.json();
           const text = res.ok ? data.content[0].text : `Error: ${data.error?.message || "unknown"}`;
