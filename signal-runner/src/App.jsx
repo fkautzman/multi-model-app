@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as sessionStore from "./lib/sessionStore";
 import { SYNTH_MODES } from "./lib/constants";
+import { callProvider, openAIShape, geminiShape, claudeShape } from "./lib/providers";
 import { buildFullSessionExport, generateFilename, triggerDownload } from "./lib/exportUtils";
 import { KeyIcon, DownloadIcon } from "./components/Icons";
 import Sidebar from "./components/Sidebar";
@@ -11,91 +12,52 @@ import PromptInput from "./components/PromptInput";
 const MODELS = [
   {
     id: "perplexity", label: "Perplexity", role: "Research", accent: "#20B2AA",
-    call: async (messages, key) => {
-      const res = await fetch("/api/perplexity", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "sonar", max_tokens: 4000, messages }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "Perplexity error");
-      return data.choices[0].message.content;
-    },
+    call: (messages, key) => callProvider({
+      id: "perplexity", label: "Perplexity", url: "/api/perplexity", key,
+      body: { model: "sonar", max_tokens: 4000, messages },
+      extract: openAIShape,
+    }),
   },
   {
     id: "gemini", label: "Gemini", role: "Synthesis", accent: "#4285F4",
-    call: async (messages, key) => {
-      const contents = messages.map((m) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }],
-      }));
-      const res = await fetch("/api/gemini", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4000 } }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "Gemini error");
-      return data.candidates[0].content.parts[0].text;
-    },
+    call: (messages, key) => callProvider({
+      id: "gemini", label: "Gemini", url: "/api/gemini", key,
+      body: {
+        contents: messages.map((m) => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content }],
+        })),
+        generationConfig: { maxOutputTokens: 4000 },
+      },
+      extract: geminiShape,
+    }),
   },
   {
     id: "chatgpt", label: "ChatGPT", role: "Structure", accent: "#10A37F",
-    call: async (messages, key) => {
-      const res = await fetch("/api/openai", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "gpt-6-astra", max_completion_tokens: 4000, reasoning_effort: "low", messages }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "OpenAI error");
-      return data.choices[0].message.content;
-    },
+    // 16000, not 4000: reasoning tokens share this budget and expanded to fill
+    // 4000/8000/12000 on heavy prompts, returning an empty message. Mitigation,
+    // not a guarantee — callProvider surfaces it if the model still starves.
+    call: (messages, key) => callProvider({
+      id: "chatgpt", label: "ChatGPT", url: "/api/openai", key,
+      body: { model: "gpt-6-astra", max_completion_tokens: 16000, reasoning_effort: "low", messages },
+      extract: openAIShape,
+    }),
   },
   {
     id: "claude", label: "Claude", role: "Nuance", accent: "#D4763B",
-    call: async (messages, key) => {
-      const res = await fetch("/api/claude", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 4000, thinking: { type: "disabled" }, messages }),
-      });
-      const raw = await res.text();
-      let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        console.error("[claude] non-JSON response", { status: res.status, body: raw });
-        throw new Error(`Claude returned non-JSON (status ${res.status})`);
-      }
-      if (!res.ok) {
-        console.error("[claude] HTTP error", { status: res.status, body: data });
-        throw new Error(data.error?.message || "Claude error");
-      }
-      if (!data.content?.some((b) => b.type === "text" && b.text)) {
-        console.error("[claude] no non-empty text block", {
-          status: res.status,
-          stop_reason: data.stop_reason,
-          blockTypes: data.content?.map((b) => b.type),
-          usage: data.usage,
-          body: data,
-        });
-      }
-      return data.content.find((b) => b.type === "text")?.text;
-    },
+    call: (messages, key) => callProvider({
+      id: "claude", label: "Claude", url: "/api/claude", key,
+      body: { model: "claude-sonnet-5", max_tokens: 4000, thinking: { type: "disabled" }, messages },
+      extract: claudeShape,
+    }),
   },
   {
     id: "grok", label: "Grok", role: "Contrarian", accent: "#E0E0E0",
-    call: async (messages, key) => {
-      const res = await fetch("/api/grok", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "grok-4.6", max_tokens: 4000, messages }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "Grok error");
-      return data.choices[0].message.content;
-    },
+    call: (messages, key) => callProvider({
+      id: "grok", label: "Grok", url: "/api/grok", key,
+      body: { model: "grok-4.6", max_tokens: 4000, messages },
+      extract: openAIShape,
+    }),
   },
 ];
 
@@ -166,33 +128,14 @@ export default function SignalRunner() {
       SYNTH_MODES.map(async (mode) => {
         const synthPrompt = `Original prompt: "${turn.user}"\n\nModel outputs:\n\n${allModelOutputs}\n\n---\n\nYour task: ${mode.prompt}`;
         try {
-          const res = await fetch("/api/claude", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...(keys.claude && { "X-API-Key": keys.claude }) },
-            body: JSON.stringify({ model: "claude-opus-5", max_tokens: 8000, messages: [{ role: "user", content: synthPrompt }] }),
+          const text = await callProvider({
+            id: `claude:synth:${mode.id}`, label: "Claude", url: "/api/claude", key: keys.claude,
+            body: {
+              model: "claude-opus-5", max_tokens: 8000,
+              messages: [{ role: "user", content: synthPrompt }],
+            },
+            extract: claudeShape,
           });
-          const raw = await res.text();
-          let data;
-          try {
-            data = JSON.parse(raw);
-          } catch {
-            console.error(`[claude:synth:${mode.id}] non-JSON response`, { status: res.status, body: raw });
-            throw new Error(`Claude returned non-JSON (status ${res.status})`);
-          }
-          if (!res.ok) {
-            console.error(`[claude:synth:${mode.id}] HTTP error`, { status: res.status, body: data });
-          } else if (!data.content?.some((b) => b.type === "text" && b.text)) {
-            console.error(`[claude:synth:${mode.id}] no non-empty text block`, {
-              status: res.status,
-              stop_reason: data.stop_reason,
-              blockTypes: data.content?.map((b) => b.type),
-              usage: data.usage,
-              body: data,
-            });
-          }
-          const text = res.ok
-            ? data.content.find((b) => b.type === "text")?.text
-            : `Error: ${data.error?.message || "unknown"}`;
           synthResults[mode.id] = text;
           setSynthesis((s) => ({ ...s, [mode.id]: text }));
         } catch (e) {
