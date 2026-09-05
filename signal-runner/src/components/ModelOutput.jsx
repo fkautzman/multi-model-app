@@ -18,6 +18,13 @@ export default function ModelOutput({ model, turns, loading, lastTurn }) {
 
   const hasContent = turns.some((t) => t.responses?.[model.id]?.content);
 
+  // Authoritative version from the provider's own field — never the model's
+  // self-description in prose. Latest turn that reported one wins.
+  const reported = [...turns]
+    .reverse()
+    .map((t) => t.responses?.[model.id]?.model_reported)
+    .find(Boolean);
+
   const handleExport = () => {
     const content = buildModelExport(model, turns);
     const filename = generateFilename(turns[0]?.user || model.label);
@@ -31,6 +38,15 @@ export default function ModelOutput({ model, turns, loading, lastTurn }) {
         <div>
           <div style={{ fontSize: 12, fontWeight: 600, color: model.accent, letterSpacing: "0.05em" }}>{model.label}</div>
           <div style={{ fontSize: 9, color: "#2e2e2e", letterSpacing: "0.14em", marginTop: 3 }}>{model.role.toUpperCase()}</div>
+          <div style={{ fontSize: 9, color: "#3a3a3a", marginTop: 5, lineHeight: 1.5 }}>
+            <div><span style={{ color: "#2e2e2e" }}>cfg </span>{model.model}</div>
+            <div>
+              <span style={{ color: "#2e2e2e" }}>api </span>
+              {reported
+                ? <span style={{ color: reported === model.model ? "#3a3a3a" : "#8a6d3b" }}>{reported}</span>
+                : <span style={{ color: "#2e2e2e" }}>—</span>}
+            </div>
+          </div>
         </div>
         {hasContent && (
           <button className="export-btn" onClick={handleExport}

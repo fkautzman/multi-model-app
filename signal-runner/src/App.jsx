@@ -2,6 +2,8 @@ import { useState } from "react";
 import * as sessionStore from "./lib/sessionStore";
 import { SYNTH_MODES } from "./lib/constants";
 import { callProvider, openAIShape, geminiShape, claudeShape } from "./lib/providers";
+import { MODEL_IDS } from "./lib/models";
+import { isJsonOnlyPrompt, jsonParseError } from "./lib/jsonCheck";
 import { buildFullSessionExport, generateFilename, triggerDownload } from "./lib/exportUtils";
 import { KeyIcon, DownloadIcon } from "./components/Icons";
 import Sidebar from "./components/Sidebar";
@@ -12,50 +14,64 @@ import PromptInput from "./components/PromptInput";
 const MODELS = [
   {
     id: "perplexity", label: "Perplexity", role: "Research", accent: "#20B2AA",
+    model: MODEL_IDS.perplexity,
     call: (messages, key) => callProvider({
       id: "perplexity", label: "Perplexity", url: "/api/perplexity", key,
-      body: { model: "sonar", max_tokens: 4000, messages },
+      body: { model: MODEL_IDS.perplexity, max_tokens: 16000, messages },
       extract: openAIShape,
     }),
   },
   {
     id: "gemini", label: "Gemini", role: "Synthesis", accent: "#4285F4",
-    call: (messages, key) => callProvider({
+    model: MODEL_IDS.gemini,
+    call: (messages, key, opts) => callProvider({
       id: "gemini", label: "Gemini", url: "/api/gemini", key,
       body: {
         contents: messages.map((m) => ({
           role: m.role === "assistant" ? "model" : "user",
           parts: [{ text: m.content }],
         })),
-        generationConfig: { maxOutputTokens: 4000 },
+        // Gemini counts thinking tokens against this ceiling, so the visible
+        // share is less than 16000. Model cap is 65536.
+        generationConfig: {
+          maxOutputTokens: 16000,
+          ...(opts?.json && { responseMimeType: "application/json" }),
+        },
       },
       extract: geminiShape,
     }),
   },
   {
     id: "chatgpt", label: "ChatGPT", role: "Structure", accent: "#10A37F",
+    model: MODEL_IDS.chatgpt,
     // 16000, not 4000: reasoning tokens share this budget and expanded to fill
     // 4000/8000/12000 on heavy prompts, returning an empty message. Mitigation,
     // not a guarantee — callProvider surfaces it if the model still starves.
-    call: (messages, key) => callProvider({
+    call: (messages, key, opts) => callProvider({
       id: "chatgpt", label: "ChatGPT", url: "/api/openai", key,
-      body: { model: "gpt-6-astra", max_completion_tokens: 16000, reasoning_effort: "low", messages },
+      body: {
+        model: MODEL_IDS.chatgpt, max_completion_tokens: 16000, reasoning_effort: "low",
+        ...(opts?.json && { response_format: { type: "json_object" } }),
+        messages,
+      },
       extract: openAIShape,
     }),
   },
   {
     id: "claude", label: "Claude", role: "Nuance", accent: "#D4763B",
+    model: MODEL_IDS.claude,
     call: (messages, key) => callProvider({
       id: "claude", label: "Claude", url: "/api/claude", key,
-      body: { model: "claude-sonnet-5", max_tokens: 4000, thinking: { type: "disabled" }, messages },
+      body: { model: MODEL_IDS.claude, max_tokens: 16000, thinking: { type: "disabled" }, messages },
       extract: claudeShape,
     }),
   },
   {
     id: "grok", label: "Grok", role: "Contrarian", accent: "#E0E0E0",
+    model: MODEL_IDS.grok,
     call: (messages, key) => callProvider({
       id: "grok", label: "Grok", url: "/api/grok", key,
-      body: { model: "grok-4.6", max_tokens: 4000, messages },
+      body: { model: MODEL_IDS.grok, max_tokens: 4000, messages },
       extract: openAIShape,
     }),
   },
@@ -128,7 +144,7 @@ export default function SignalRunner() {
       SYNTH_MODES.map(async (mode) => {
         const synthPrompt = `Original prompt: "${turn.user}"\n\nModel outputs:\n\n${allModelOutputs}\n\n---\n\nYour task: ${mode.prompt}`;
         try {
-          const text = await callProvider({
+          const { text } = await callProvider({
             id: `claude:synth:${mode.id}`, label: "Claude", url: "/api/claude", key: keys.claude,
             body: {
               model: "claude-opus-5", max_tokens: 8000,
@@ -190,25 +206,40 @@ export default function SignalRunner() {
     activeModels.forEach((m) => (init[m.id] = true));
     setLoading(init);
 
+    const jsonMode = isJsonOnlyPrompt(promptText);
+
     const responses = {};
     await Promise.allSettled(
       activeModels.map(async (model) => {
         try {
-          const result = await model.call(perModelMessages[model.id], keys[model.id] || "");
-          responses[model.id] = { content: result };
+          const { text, reported } = await model.call(
+            perModelMessages[model.id], keys[model.id] || "", { json: jsonMode }
+          );
+          const parseError = jsonMode ? jsonParseError(text) : null;
+          const record = {
+            content: parseError ? `${text}\n\nJSON_INVALID: ${parseError}` : text,
+            model_configured: model.model,
+            model_reported: reported ?? null,
+          };
+          responses[model.id] = record;
           currentTurns = currentTurns.map((t) =>
             t.id === newTurnId
-              ? { ...t, responses: { ...t.responses, [model.id]: { content: result } } }
+              ? { ...t, responses: { ...t.responses, [model.id]: record } }
               : t
           );
           setTurns(currentTurns);
           sessionStore.update(sessionId, { turns: currentTurns });
         } catch (e) {
           const errorMsg = `${model.label} failed: ${e.message}`;
-          responses[model.id] = { error: errorMsg };
+          const record = {
+            error: errorMsg,
+            model_configured: model.model,
+            model_reported: null,
+          };
+          responses[model.id] = record;
           currentTurns = currentTurns.map((t) =>
             t.id === newTurnId
-              ? { ...t, responses: { ...t.responses, [model.id]: { error: errorMsg } } }
+              ? { ...t, responses: { ...t.responses, [model.id]: record } }
               : t
           );
           setTurns(currentTurns);

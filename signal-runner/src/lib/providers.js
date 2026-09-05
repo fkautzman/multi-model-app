@@ -12,6 +12,7 @@ export const openAIShape = (d) => ({
   text: d.choices?.[0]?.message?.content,
   finish: d.choices?.[0]?.finish_reason,
   usage: d.usage,
+  reported: d.model,
 });
 
 /** Response shape for Gemini generateContent. */
@@ -22,6 +23,7 @@ export const geminiShape = (d) => {
     text: parts.map((p) => p.text).filter(Boolean).join(""),
     finish: candidate?.finishReason,
     usage: d.usageMetadata,
+    reported: d.modelVersion,
   };
 };
 
@@ -30,10 +32,14 @@ export const claudeShape = (d) => ({
   text: d.content?.find((b) => b.type === "text")?.text,
   finish: d.stop_reason,
   usage: d.usage,
+  reported: d.model,
 });
 
 /**
- * POST to a provider proxy and return its text, or throw with a reason.
+ * POST to a provider proxy and return { text, reported }, or throw with a reason.
+ * `reported` is the provider's own authoritative model field (Gemini
+ * modelVersion, OpenAI/Claude model) — never the model's self-description in
+ * prose. Undefined when the provider returns no such field.
  * Logs the full response body to the console on every failure path.
  */
 export async function callProvider({ id, label, url, body, key, extract }) {
@@ -58,7 +64,7 @@ export async function callProvider({ id, label, url, body, key, extract }) {
     throw new Error(data.error?.message || `${label} error (status ${res.status})`);
   }
 
-  const { text, finish, usage } = extract(data);
+  const { text, finish, usage, reported } = extract(data);
 
   if (!text) {
     console.error(`[${id}] HTTP 200 with no usable text`, {
@@ -74,5 +80,5 @@ export async function callProvider({ id, label, url, body, key, extract }) {
     );
   }
 
-  return text;
+  return { text, reported };
 }

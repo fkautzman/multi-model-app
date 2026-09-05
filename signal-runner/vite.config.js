@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { MODEL_IDS } from './src/lib/models.js'
 
 function apiProxyPlugin(env) {
   return {
@@ -37,7 +38,7 @@ function apiProxyPlugin(env) {
           },
         }),
         gemini: (key, body) => ({
-          url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${key}`,
+          url: `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_IDS.gemini}:generateContent?key=${key}`,
           init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
         }),
         claude: (key, body) => ({
