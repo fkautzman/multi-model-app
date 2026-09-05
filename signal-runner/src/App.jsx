@@ -58,11 +58,30 @@ const MODELS = [
       const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 1000, messages }),
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 1000, thinking: { type: "disabled" }, messages }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "Claude error");
-      return data.content[0].text;
+      const raw = await res.text();
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        console.error("[claude] non-JSON response", { status: res.status, body: raw });
+        throw new Error(`Claude returned non-JSON (status ${res.status})`);
+      }
+      if (!res.ok) {
+        console.error("[claude] HTTP error", { status: res.status, body: data });
+        throw new Error(data.error?.message || "Claude error");
+      }
+      if (!data.content?.some((b) => b.type === "text" && b.text)) {
+        console.error("[claude] no non-empty text block", {
+          status: res.status,
+          stop_reason: data.stop_reason,
+          blockTypes: data.content?.map((b) => b.type),
+          usage: data.usage,
+          body: data,
+        });
+      }
+      return data.content.find((b) => b.type === "text")?.text;
     },
   },
   {
@@ -152,8 +171,28 @@ export default function SignalRunner() {
             headers: { "Content-Type": "application/json", ...(keys.claude && { "X-API-Key": keys.claude }) },
             body: JSON.stringify({ model: "claude-opus-5", max_tokens: 8000, messages: [{ role: "user", content: synthPrompt }] }),
           });
-          const data = await res.json();
-          const text = res.ok ? data.content[0].text : `Error: ${data.error?.message || "unknown"}`;
+          const raw = await res.text();
+          let data;
+          try {
+            data = JSON.parse(raw);
+          } catch {
+            console.error(`[claude:synth:${mode.id}] non-JSON response`, { status: res.status, body: raw });
+            throw new Error(`Claude returned non-JSON (status ${res.status})`);
+          }
+          if (!res.ok) {
+            console.error(`[claude:synth:${mode.id}] HTTP error`, { status: res.status, body: data });
+          } else if (!data.content?.some((b) => b.type === "text" && b.text)) {
+            console.error(`[claude:synth:${mode.id}] no non-empty text block`, {
+              status: res.status,
+              stop_reason: data.stop_reason,
+              blockTypes: data.content?.map((b) => b.type),
+              usage: data.usage,
+              body: data,
+            });
+          }
+          const text = res.ok
+            ? data.content.find((b) => b.type === "text")?.text
+            : `Error: ${data.error?.message || "unknown"}`;
           synthResults[mode.id] = text;
           setSynthesis((s) => ({ ...s, [mode.id]: text }));
         } catch (e) {
