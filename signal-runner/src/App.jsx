@@ -15,7 +15,7 @@ const MODELS = [
       const res = await fetch("/api/perplexity", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "sonar", messages }),
+        body: JSON.stringify({ model: "sonar", max_tokens: 4000, messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Perplexity error");
@@ -32,7 +32,7 @@ const MODELS = [
       const res = await fetch("/api/gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ contents }),
+        body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 4000 } }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Gemini error");
@@ -45,7 +45,7 @@ const MODELS = [
       const res = await fetch("/api/openai", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "gpt-6-astra", messages }),
+        body: JSON.stringify({ model: "gpt-6-astra", max_completion_tokens: 4000, reasoning_effort: "low", messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "OpenAI error");
@@ -58,7 +58,7 @@ const MODELS = [
       const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 1000, thinking: { type: "disabled" }, messages }),
+        body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 4000, thinking: { type: "disabled" }, messages }),
       });
       const raw = await res.text();
       let data;
@@ -90,7 +90,7 @@ const MODELS = [
       const res = await fetch("/api/grok", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(key && { "X-API-Key": key }) },
-        body: JSON.stringify({ model: "grok-4.6", messages }),
+        body: JSON.stringify({ model: "grok-4.6", max_tokens: 4000, messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Grok error");
